@@ -1,0 +1,129 @@
+// GRAPH ALGORITHM USING NEO4J CYPHER SCRIPT
+// 16BCE1179 SIN PROJECT CODE
+
+CALL db.schema()
+
+// DATSET DISCRIPTION
+
+MATCH (c:Character)-->()
+WITH c, count(*) AS num
+RETURN min(num) AS min, max(num) AS max, avg(num) AS avg_characters, stdev(num) AS stdev
+
+// GROUPTING OF BOOK
+
+MATCH (c:Character)-[r]->()
+WITH r.book as book, c, count(*) AS num
+RETURN book, min(num) AS min, max(num) AS max, avg(num) AS avg_characters, stdev(num) AS stdev
+ORDER BY book
+
+// DIAMETER OF GRAPH
+// Find maximum diameter of network
+// maximum shortest path between two nodes
+MATCH (a:Character), (b:Character) WHERE id(a) > id(b)
+MATCH p = shortestPath((a)-[:INTERACTS2*]-(b))
+
+WITH length(p) AS len, p
+ORDER BY len DESC
+LIMIT 5
+RETURN nodes(p) AS path, len
+
+//PIVOTAL NODE
+
+MATCH (a:Character), (b:Character) WHERE id(a) > id(b)
+MATCH p = allShortestPaths((a)-[:INTERACTS1*]-(b))
+
+WITH collect(p) AS paths, a, b
+UNWIND nodes(head(paths)) as c // first path
+
+WITH *
+WHERE NOT c IN [a,b]
+AND all(path IN tail(paths) WHERE c IN nodes(path))
+
+RETURN a.name, b.name, c.name AS PivotalNode, length(head(paths)) AS pathLength, length(paths) AS pathCount
+SKIP 490
+LIMIT 10
+
+//BETWEENESS CENTRALITY 
+
+CALL algo.betweenness.stream("Character", "INTERACTS1", {direction: "BOTH"})
+YIELD nodeId, centrality
+MATCH (c:Character) WHERE ID(c) = nodeId
+RETURN c.name, centrality
+ORDER BY centrality DESC
+LIMIT 10
+
+// BIGGEST COMMUNOCATOR
+
+CALL algo.betweenness.stream("Character", "INTERACTS1", {direction: "BOTH"})
+YIELD nodeId, centrality
+MATCH (c:Character) WHERE ID(c) = nodeId
+WITH c, centrality, [(c)-[r:INTERACTS1]-(other) | {character: other.name, weight: r.weight}] AS interactions
+RETURN c.name, centrality,
+       apoc.coll.sum([i in interactions | i.weight]) AS totalInteractions,
+       [i in apoc.coll.reverse(apoc.coll.sortMaps(interactions, 'weight'))[..5] | i.character] as charactersInteractedWith
+ORDER BY centrality DESC
+LIMIT 10
+
+// CALL ALGORITHM
+
+CALL algo.betweenness("Character", "INTERACTS1", {direction: "BOTH", writeProperty: "book1BetweennessCentrality"})
+
+//PAGE RANK ALGORITHM
+MATCH (c:Character)
+WITH c, [(c)-[r:INTERACTS1]-(other) | {character: other.name, weight: r.weight}] AS interactions
+RETURN c.name, c.book1PageRank, c.book1BetweennessCentrality,
+       apoc.coll.sum([i in interactions | i.weight]) AS totalInteractions,
+       [i in apoc.coll.reverse(apoc.coll.sortMaps(interactions, 'weight'))[..5] | i.character] as charactersInteractedWith
+ORDER BY c.book1PageRank DESC
+LIMIT 10
+
+// COMMUNITY DETECTION BY LABEL PROPOGATION
+
+CALL algo.labelPropagation(
+  'MATCH (c:Character) RETURN id(c) as id',
+  'MATCH (c:Character)-[rel]->(c2) RETURN id(c) as source, id(c2) as target, SUM(rel.weight) as weight',
+  'OUTGOING',
+  {graph:'cypher', partitionProperty: 'community'})
+  
+ //PAGE RANK IN COMMUNITES
+ CALL algo.pageRank(
+  'MATCH (c:Character) RETURN id(c) as id',
+  'MATCH (c:Character)-[rel]->(c2) RETURN id(c) as source,id(c2) as target, SUM(rel.weight) as weight',
+  {graph:'cypher', writeProperty: 'pageRank'})
+  //
+  MATCH (c:Character)
+WHERE exists(c.community)
+WITH c ORDER BY c.pageRank DESC
+RETURN c.community as cluster, count(*) AS count, collect(c.name)[..10]
+ORDER BY count DESC
+// COMMUNITY GRAPH PLOTTING
+MATCH (c:Character) WHERE EXISTS(c.community)
+WITH c.community AS community, COUNT(*) AS count
+ORDER BY count DESC
+SKIP 1 LIMIT 1
+MATCH path = (c:Character {community: community})--(c2:Character {community: community})
+RETURN path
+
+// INTRA COMMUNITY PAGE RANK
+
+MATCH (c:Character) WHERE EXISTS(c.community)
+WITH c.community AS communityId, COUNT(*) AS count
+ORDER BY count DESC
+SKIP 1 LIMIT 1
+CALL apoc.cypher.doIt(
+  "CALL algo.pageRank(
+    'MATCH (c:Character) WHERE c.community =" + communityId + " RETURN id(c) as id',
+    'MATCH (c:Character)-[rel]->(c2) WHERE c.community =" + communityId + " AND c2.community =" + communityId + " RETURN id(c) as source,id(c2) as target, sum(rel.weight) as weight',
+    {graph:'cypher', writeProperty: 'communityPageRank'}) YIELD nodes RETURN count(*)", {})
+YIELD value
+RETURN value
+// GRAPH VISUALIZATION
+MATCH (c:Character) WHERE EXISTS(c.community)
+WITH c.community AS communityId, COUNT(*) AS count
+ORDER BY count DESC
+SKIP 1 LIMIT 1
+MATCH (c:Character) WHERE c.community = communityId
+RETURN c.name, c.communityPageRank
+ORDER BY c.communityPageRank DESC
+LIMIT 10
+
